@@ -1,0 +1,480 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "ECS Service Metrics Reporting",
+  "Metadata": {
+    "AWS::CloudFormation::Interface": {
+      "ParameterGroups": [
+        {
+          "Label": {
+            "default": "Main Parameters"
+          },
+          "Parameters": [
+            "Environment",
+            "DeploymentRegion",
+            "SecurityGroup"
+          ]
+        },
+        {
+          "Label": {
+            "default": "Service Metrics Parameters"
+          },
+          "Parameters": [
+            "ServiceMetricsImage",
+            "ServiceMetricsVersion",
+            "ServiceMetricsCount",
+            "ServiceMetricsFGCPU",
+            "ServiceMetricsFGMemory"
+          ]
+        },
+        {
+          "Label": {
+            "default": "Logging Sidecar Parameters"
+          },
+          "Parameters": [
+            "LoggingSidecarImage",
+            "LoggingSidecarVersion"
+          ]
+        }
+      ]
+    }
+  },
+  "Parameters": {
+    "Environment": {
+      "Type": "String",
+      "Default": "production",
+      "Description": "Enter the environment to provision."
+    },
+    "DeploymentRegion": {
+      "Type": "String",
+      "Default": "us-east-1",
+      "AllowedValues": [
+        "us-east-1",
+        "us-west-1"
+      ],
+      "Description": "The AWS region for the current template deployment"
+    },
+    "SecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup::Id",
+      "Default": "sg-12345",
+      "AllowedValues": [
+        "sg-12345"
+      ],
+      "Description": "Default replacement sg for security group in deployment vpc"
+    },   
+    "ServiceMetricsImage": {
+      "Type": "String",
+      "Default": "service-metrics",
+      "Description": "Enter the name of the service metrics image"
+    },    
+    "ServiceMetricsVersion": {
+      "Type": "String",
+      "Default": "1.0.0",
+      "Description": "Enter the version of service metrics to install"
+    },  
+    "ServiceMetricsCount": {
+      "Type": "String",
+      "Default": "1",
+      "Description": "Enter the number of service metrics containers to launch"
+    },
+    "ServiceMetricsFGCPU": {
+      "Type": "CommaDelimitedList",
+      "Default": "512, 384, 128",
+      "Description": "Enter the cpu values [total, container, sidecar] for FarGate"
+    },
+    "ServiceMetricsFGMemory": {
+      "Type": "CommaDelimitedList",
+      "Default": "1024, 768, 256",
+      "Description": "Enter the memory values [total, container, sidecar] for FarGate"
+    },
+    "LoggingSidecarImage": {
+      "Type": "String",
+      "Default": "logging-sidecar",
+      "Description": "Enter the name of the Logging Sidecar image"
+    },
+    "LoggingSidecarVersion": {
+      "Type": "String",
+      "Default": "1.0.0",
+      "Description": "Enter the version to install"
+    }
+  },
+  "Mappings": {
+    "GlobalMap": {
+      "Subnets": {
+        "subnetA": "subnet-a",
+        "subnetB": "subnet-b",
+        "subnetC": "subnet-c",
+        "subnetD": "subnet-d",
+        "subnetE": "subnet-e",
+        "subnetF": "subnet-f",
+        "subnetAregion2": "subnet-a-reg2",
+        "subnetBregion2": "subnet-b-reg2",
+        "subnetCregion2": "subnet-c-reg2"
+      },
+      "Vpcs": {
+        "vpcId1": "vpc-1",
+        "vpcId2": "vpc-2"
+      }
+    },
+    "LoggingMap": {
+      "Logback": {
+        "logFqdn": "",
+        "logPort": "",
+        "logMode": "tcp",
+        "ServiceMetricsTag": "service-metrics"
+      }
+    }
+  },
+  "Conditions": {
+    "NotInUsEast1": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Fn::Sub": "${AWS::Region}"
+            },
+            "us-east-1"
+          ]
+        }
+      ]
+    }    
+  },
+  "Resources": {
+    "Cluster": {
+      "Type": "AWS::ECS::Cluster",
+      "Properties": {
+        "ClusterName": {
+          "Fn::Sub": "servicemetrics-${Environment}"
+        },
+        "ClusterSettings": [
+          {
+            "Name": "containerInsights",
+            "Value": "enabled"
+          }
+        ]
+      }
+    },
+    "ECSServiceTaskRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "ecs-tasks.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        },
+        "Path": "/",
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/AmazonECS_FullAccess"
+        ]
+      }
+    },
+    "RoleContainers": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "ecs-tasks.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        },
+        "Path": "/",
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "container-role",
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "kms:Decrypt",
+                    "ssm:GetParameter",
+                    "ssm:GetParameters",
+                    "ecs:List*",
+                    "ecs:Describe*"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ServiceMetricsService": {
+      "Type": "AWS::ECS::Service",
+      "Properties": {
+        "Cluster": {
+          "Ref": "Cluster"
+        },
+        "DesiredCount": {
+          "Ref": "ServiceMetricsCount"
+        },
+        "EnableExecuteCommand": true,
+        "LaunchType": "FARGATE",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "SecurityGroups": [
+              {
+                "Ref": "SecurityGroup"
+              }
+            ],
+            "Subnets": {
+              "Fn::If": [
+                "NotInUsEast1",
+                [
+                  {                  
+                    "Fn::FindInMap": [
+                      "GlobalMap",
+                      "Subnets",
+                      "subnetAregion2"
+                    ]
+                  },
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalMap",
+                      "Subnets",
+                      "subnetBregion2"
+                    ]
+                  },
+                  {   
+                    "Fn::FindInMap": [
+                      "GlobalMap",
+                      "Subnets",
+                      "subnetCregion2"
+                    ]
+                  }
+                ],
+                [
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalMap",
+                      "Subnets",
+                      "subnetA"
+                    ]
+                  },
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalMap",
+                      "Subnets",
+                      "subnetB"
+                    ]
+                  },
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalMap",
+                      "Subnets",
+                      "subnetC"
+                    ]
+                  },
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalMap",
+                      "Subnets",
+                      "subnetD"
+                    ]
+                  },
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalMap",
+                      "Subnets",
+                      "subnetE"
+                    ]
+                  },
+                  {
+                    "Fn::FindInMap": [
+                      "GlobalMap",
+                      "Subnets",
+                      "subnetF"
+                    ]
+                  }
+                ]
+              ]              
+            }
+          }
+        },
+        "LoadBalancers": [],
+        "TaskDefinition": {
+          "Ref": "TaskDefinitionServiceMetrics"
+        },
+        "PropagateTags": "TASK_DEFINITION"
+      }
+    },
+    "TaskDefinitionServiceMetrics": {
+      "Type": "AWS::ECS::TaskDefinition",
+      "Properties": {
+        "NetworkMode": "awsvpc",
+        "ExecutionRoleArn": {
+          "Fn::GetAtt": [
+            "RoleContainers",
+            "Arn"
+          ]
+        },
+        "TaskRoleArn": {
+          "Fn::GetAtt": [
+            "ECSServiceTaskRole",
+            "Arn"
+          ]
+        },
+        "Cpu": {
+          "Fn::Select": [
+            "0",
+            {
+              "Ref": "ServiceMetricsFGCPU"
+            }
+          ]
+        },
+        "Memory": {
+          "Fn::Select": [
+            "0",
+            {
+              "Ref": "ServiceMetricsFGMemory"
+            }
+          ]
+        },
+        "ContainerDefinitions": [
+          {
+            "Name": "service-metrics_logs",
+            "Essential": true,
+            "Image": {
+              "Fn::Sub": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${LoggingSidecarImage}:${LoggingSidecarVersion}"
+            },
+            "Cpu": {
+              "Fn::Select": [
+                "2",
+                {
+                  "Ref": "ServiceMetricsFGCPU"
+                }
+              ]
+            },
+            "Memory": {
+              "Fn::Select": [
+                "2",
+                {
+                  "Ref": "ServiceMetricsFGMemory"
+                }
+              ]
+            },
+            "Environment": [
+              {
+                "Name": "LOG_HOST",
+                "Value": {
+                  "Fn::FindInMap": [
+                    "LoggingMap",
+                    "Logback",
+                    "logFqdn"
+                  ]
+                }
+              },
+              {
+                "Name": "LOG_PORT",
+                "Value": {
+                  "Fn::FindInMap": [
+                    "LoggingMap",
+                    "Logback",
+                    "logPort"
+                  ]
+                }
+              },
+              {
+                "Name": "LOG_MODE",
+                "Value": {
+                  "Fn::FindInMap": [
+                    "LoggingMap",
+                    "Logback",
+                    "logMode"
+                  ]
+                }
+              },
+              {
+                "Name": "TAG_PREFIX",
+                "Value": "TAG_NAME_"
+              },
+              {
+                "Name": "TAG_NAME_tag",
+                "Value": {
+                  "Fn::FindInMap": ["LoggingMap","Logback","ServiceMetricsTag"]
+                }
+              },
+              {
+                "Name": "TAG_NAME_environment",
+                "Value": {
+                  "Fn::Sub": "${Environment}"
+                }
+              }
+            ],
+            "FirelensConfiguration": {
+              "Type": "fluentbit",
+              "Options": {
+                "enable-ecs-log-metadata": "true"
+              }
+            }
+          },
+          {
+            "Name": "service-metrics",
+            "Image": {
+              "Fn::Sub": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ServiceMetricsImage}:${ServiceMetricsVersion}"
+            },
+            "Cpu": {
+              "Fn::Select": [
+                "1",
+                {
+                  "Ref": "ServiceMetricsFGCPU"
+                }
+              ]
+            },
+            "Memory": {
+              "Fn::Select": [
+                "1",
+                {
+                  "Ref": "ServiceMetricsFGMemory"
+                }
+              ]
+            },
+            "PortMappings": [],
+            "Environment": [
+              {
+                "Name": "AWS_TEMPLATE_REGION",
+                "Value": {
+                  "Ref": "DeploymentRegion"
+                }
+              }               
+            ],
+            "LogConfiguration": {
+              "LogDriver": "awsfirelens"
+            }
+          }
+        ],
+        "Tags":[
+          {
+            "Key": "Environment",
+            "Value": {
+              "Fn::Sub": "service-metrics-${Environment}"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {}
+}
